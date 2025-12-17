@@ -2,35 +2,65 @@ import io
 from fastapi import FastAPI, UploadFile, File
 from PIL import Image
 import torch
-from transformers import AutoImageProcessor, AutoModelForImageClassification
+from transformers import (
+    AutoImageProcessor,
+    AutoModelForImageClassification,
+)
 
-MODEL_ID = "prithivMLmods/Deep-Fake-Detector-v2-Model"
+# ====== CONFIG ======
+MODEL_PATH = "/models/hf"   # nơi snapshot_download đã lưu model
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-app = FastAPI()
+# (Khuyến nghị) In log ra để debug
+print(f"[INFO] Using device: {DEVICE}")
+print(f"[INFO] Loading model from: {MODEL_PATH}")
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-processor = AutoImageProcessor.from_pretrained(MODEL_ID, local_files_only=True)
-model = AutoModelForImageClassification.from_pretrained(MODEL_ID, local_files_only=True).to(device)
+# ====== LOAD MODEL ======
+processor = AutoImageProcessor.from_pretrained(
+    MODEL_PATH,
+    local_files_only=True,
+)
+
+model = AutoModelForImageClassification.from_pretrained(
+    MODEL_PATH,
+    local_files_only=True,
+).to(DEVICE)
+
 model.eval()
+
+# ====== FASTAPI ======
+app = FastAPI(title="Deepfake Detector Inference")
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "device": device}
+    return {
+        "status": "ok",
+        "device": DEVICE,
+    }
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     img_bytes = await file.read()
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    inputs = processor(images=img, return_tensors="pt").to(device)
+    image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+    inputs = processor(
+        images=image,
+        return_tensors="pt",
+    ).to(DEVICE)
 
     with torch.no_grad():
-        logits = model(**inputs).logits
-        probs = torch.softmax(logits, dim=-1)[0].detach().cpu().tolist()
-        pred = int(torch.argmax(logits, dim=-1).item())
+        outputs = model(**inputs)
+        logits = outputs.logits
+        probs = torch.softmax(logits, dim=-1)[0]
 
-    # trả cả label + score để dễ kiểm tra mapping
+    probs = probs.detach().cpu().tolist()
+    pred_id = int(torch.argmax(logits, dim=-1).item())
+
     return {
-        "pred_id": pred,
-        "pred_label": model.config.id2label.get(pred, str(pred)),
-        "scores": {model.config.id2label.get(i, str(i)): float(p) for i, p in enumerate(probs)},
+        "predicted_id": pred_id,
+        "predicted_label": model.config.id2label.get(pred_id, str(pred_id)),
+        "probabilities": {
+            model.config.id2label.get(i, str(i)): float(p)
+            for i, p in enumerate(probs)
+        },
     }

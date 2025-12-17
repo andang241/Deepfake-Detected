@@ -4,3 +4,4 @@ pillow
 torch
 transformers
 huggingface_hub
+python-multipart
